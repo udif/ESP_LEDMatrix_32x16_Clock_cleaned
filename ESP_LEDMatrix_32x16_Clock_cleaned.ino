@@ -43,26 +43,35 @@
 #define CS_PIN  13  // D7
 #define CLK_PIN 12  // D6
 
+#define DBG
+#ifdef DBG
+#define DEBUG(x) x
+#else
 #define DEBUG(x)
-//#define DEBUG(x) x
+#endif
 
 #include "max7219.h"
 #include "fonts.h"
+#include <time.h>
 
 // =======================================================================
 // Your config below!
 // =======================================================================
-const char* ssid     = "yourssid";     // SSID of local network
-const char* password = "yourpasswd";   // Password on network
+const char* ssid     = "x";     // SSID of local network
+const char* password = "x";   // Password on network
 long utcOffset = 1;                    // UTC for Warsaw,Poland
 // =======================================================================
 
-int h, m, s, day, month, year, dayOfWeek;
-int summerTime = 0; // calculated in code from date
-long localEpoc = 0;
+time_t localEpoch = 0;
+time_t dst_from_Epoch = 0;
+time_t dst_until_Epoch = 0;
+int dst_offset = 0;
 long localMillisAtUpdate = 0;
 String date;
 String buf="";
+struct tm *_tm;
+String line;
+char dst = 0;
 
 int xPos=0, yPos=0;
 int clockOnly = 0;
@@ -74,10 +83,11 @@ void setup()
   initMAX7219();
   sendCmdAll(CMD_SHUTDOWN, 1);
   sendCmdAll(CMD_INTENSITY, 0);
-  DEBUG(Serial.print("Connecting to WiFi ");)
-  WiFi.begin(ssid, password);
   clr();
   xPos=0;
+#ifndef DBG
+  DEBUG(Serial.print("Connecting to WiFi ");)
+  WiFi.begin(ssid, password);
   printString("CONNECT..", font3x7);
   refreshAll();
   while (WiFi.status() != WL_CONNECTED) {
@@ -87,6 +97,7 @@ void setup()
   xPos=0;
   DEBUG(Serial.println(""); Serial.print("MyIP: "); Serial.println(WiFi.localIP());)
   printString((WiFi.localIP().toString()).c_str(), font3x7);
+#endif
   refreshAll();
   getTime();
 }
@@ -106,62 +117,61 @@ void loop()
   dots = (curTime % 1000)<500;     // blink 2 times/sec
   mode = (curTime % 60000)/20000;  // change mode every 20s
   updateTime();
-  if(mode==0) drawTime0(); else
-  if(mode==1) drawTime1(); else drawTime2();
+  if(mode==0) drawTime0(_tm); else
+  if(mode==1) drawTime1(_tm); else drawTime2(_tm);
   refreshAll();
   delay(100);
 }
 
 // =======================================================================
 
-//char* monthNames[] = {"STY","LUT","MAR","KWI","MAJ","CZE","LIP","SIE","WRZ","PAZ","LIS","GRU"};
 char* monthNames[] = {"JAN","FEB","MAR","APR","MAY","JUN","JUL","AUG","SEP","OCT","NOV","DEC"};
 char txt[30];
 
-void drawTime0()
+void drawTime0(struct tm *t)
 {
   clr();
   yPos = 0;
-  xPos = (h>9) ? 0 : 2;
-  sprintf(txt,"%d",h);
+  xPos = (t->tm_hour>9) ? 0 : 2;
+  sprintf(txt,"%d", t->tm_hour);
   printString(txt, digits7x16);
   if(dots) printCharX(':', digits5x16rn, xPos);
-  xPos+=(h>=22 || h==20)?1:2;
-  sprintf(txt,"%02d",m);
+  xPos+=(t->tm_hour>=22 || t->tm_hour==20)?1:2;
+  sprintf(txt,"%02d",t->tm_min);
   printString(txt, digits7x16);
 }
 
-void drawTime1()
+void drawTime1(struct tm *t)
 {
   clr();
   yPos = 0;
-  xPos = (h>9) ? 0 : 3;
-  sprintf(txt,"%d",h);
+  xPos = (t->tm_hour>9) ? 0 : 3;
+  sprintf(txt,"%d",t->tm_hour);
   printString(txt, digits5x16rn);
   if(dots) printCharX(':', digits5x16rn, xPos);
-  xPos+=(h>=22 || h==20)?1:2;
-  sprintf(txt,"%02d",m);
+  xPos+=(t->tm_hour>=22 || t->tm_hour==20)?1:2;
+  sprintf(txt,"%02d",t->tm_min);
   printString(txt, digits5x16rn);
-  sprintf(txt,"%02d",s);
+  sprintf(txt,"%02d",t->tm_sec);
   printString(txt, font3x7);
 }
 
-void drawTime2()
+void drawTime2(struct tm *t)
 {
   clr();
   yPos = 0;
-  xPos = (h>9) ? 0 : 2;
-  sprintf(txt,"%d",h);
+  xPos = (t->tm_hour>9) ? 0 : 2;
+  sprintf(txt,"%d", t->tm_hour);
   printString(txt, digits5x8rn);
   if(dots) printCharX(':', digits5x8rn, xPos);
-  xPos+=(h>=22 || h==20)?1:2;
-  sprintf(txt,"%02d",m);
+  xPos+=(t->tm_hour>=22 || t->tm_hour==20)?1:2;
+  sprintf(txt,"%02d",t->tm_min);
   printString(txt, digits5x8rn);
-  sprintf(txt,"%02d",s);
+  sprintf(txt,"%02d",t->tm_sec);
   printString(txt, digits3x5);
   yPos = 1;
   xPos = 1;
-  sprintf(txt,"%d&%s&%d",day,monthNames[month-1],year-2000);
+  sprintf(txt,"%d&%s&%d",t->tm_mday,monthNames[t->tm_mon-1],t->tm_year-1900);
   printString(txt, font3x7);
   for(int i=0;i<LINE_WIDTH;i++) scr[LINE_WIDTH+i]<<=1;
 }
@@ -239,108 +249,110 @@ void printString(String str, const uint8_t *font)
 }
 
 // =======================================================================
+time_t get_str_time(int s, struct tm *t)
+{
+  t->tm_mday = line.substring(s+8, s+10).toInt();
+  t->tm_mon = line.substring(s+5, s+7).toInt();
+  t->tm_year = line.substring(s, s+4).toInt() - 1900;
+  t->tm_hour = line.substring(s+11, s+13).toInt();
+  t->tm_min = line.substring(s+14, s+16).toInt();
+  t->tm_sec = line.substring(s+17, s+19).toInt();
+  t->tm_yday = 0;
+  t->tm_wday = 0;
+  t->tm_isdst = 0;
+    DEBUG(Serial.println(String(t->tm_hour) + ":" + String(t->tm_min) + ":" + String(t->tm_sec) + "   Date: " + t->tm_mday+"." + t->tm_mon + "." + t->tm_year);)
+  return mktime(t);
+}
 
 void getTime()
 {
   WiFiClient client;
-  DEBUG(Serial.print("connecting to www.google.com ...");)
-  if(!client.connect("www.google.com", 80)) {
+  DEBUG(Serial.print("connecting to www.worldtimeapi.org ...");)
+  updateTime();
+#ifndef DBG
+  if(!client.connect("www.worldtimeapi.org", 80)) {
     DEBUG(Serial.println("connection failed");)
     return;
   }
-  client.print(String("GET / HTTP/1.1\r\n") +
-               String("Host: www.google.com\r\n") +
-               String("Connection: close\r\n\r\n"));
+  client.print(String("GET /api/ip HTTP/1.1\r\n" \
+               "Host: www.worldtimeapi.org\r\n" \
+               "Connection: close\r\n\r\n"));
 
   int repeatCounter = 10;
   while (!client.available() && repeatCounter--) {
     delay(200); DEBUG(Serial.println("y."));
   }
 
-  String line;
-  client.setNoDelay(false);
+    client.setNoDelay(false);
   int dateFound = 0;
-  while(client.connected() && client.available() && !dateFound) {
-    line = client.readStringUntil('\n');
-    line.toUpperCase();
+  while(client.available() && !dateFound) {
+    Serial.flush();
+    line = client.readStringUntil(',');
+#else
+  int dateFound = 0;
+  line = "{\"week_number\":28,\"utc_offset\":\"+03:00\",\"utc_datetime\":\"2019-07-08T20:01:44.996234+00:00\",\"unixtime\":1562616104,\"timezone\":\"Asia/Jerusalem\",\"raw_offset\":7200,\"dst_until\":\"2019-07-08T23:02:00+00:00\",\"dst_offset\":3600,\"dst_from\":\"2019-07-08T22:01:00+00:00\",\"dst\":false,\"day_of_year\":189,\"day_of_week\":1,\"datetime\":\"2019-07-08T22:00:44.996234+03:00\",\"client_ip\":\"84.229.8.19\",\"abbreviation\":\"IDT\"}";
+  while(!dateFound) {
+    Serial.flush();
+    line = line.substring(line.indexOf(',')+1);
+#endif
+    DEBUG(Serial.println(line));
     // Date: Thu, 19 Nov 2015 20:25:40 GMT
-    if(line.startsWith("DATE: ")) {
+    if(line.startsWith("\"dst_until\"")) {
+      dst_until_Epoch = get_str_time(13, _tm);
+      DEBUG(Serial.println(dst_until_Epoch);)
+      continue;
+    }
+    if(line.startsWith("\"dst_from\"")) {
+      dst_from_Epoch = get_str_time(12, _tm);
+      continue;
+    }
+    if(line.startsWith("\"dst_offset\"")) {
+      dst_offset = line.substring(13, 17).toInt();
+      DEBUG(Serial.println(String(dst_offset)));
+      continue;
+    }
+    if(line.startsWith("\"dst\"")) {
+      dst = (line[6] == 't') ? 1 : 0;
+      DEBUG(Serial.println(dst ? "true" : "false");)
+      continue;
+    }
+    if(line.startsWith("\"datetime\"")) {
       localMillisAtUpdate = millis();
       dateFound = 1;
-      date = line.substring(6, 22);
-      date.toUpperCase();
-      decodeDate(date);
-      //Serial.println(line);
-      h = line.substring(23, 25).toInt();
-      m = line.substring(26, 28).toInt();
-      s = line.substring(29, 31).toInt();
-      summerTime = checkSummerTime();
-      if(h+utcOffset+summerTime>23) {
-        if(++day>31) { day=1; month++; };  // needs better patch
-        if(++dayOfWeek>7) dayOfWeek=1; 
-      }
-      DEBUG(Serial.println(String(h) + ":" + String(m) + ":" + String(s)+"   Date: "+day+"."+month+"."+year+" ["+dayOfWeek+"] "+(utcOffset+summerTime)+"h");)
-      localEpoc = h * 60 * 60 + m * 60 + s;
+      //"datetime":"2019-07-08T17:49:35.738925+03:00"
+      localEpoch = get_str_time(12, _tm);
     }
   }
   client.stop();
 }
 
 // =======================================================================
-// MON, TUE, WED, THU, FRI, SAT, SUN
-// JAN FEB MAR APR MAY JUN JUL AUG SEP OCT NOV DEC
-// Thu, 19 Nov 2015
-// decodes: day, month(1..12), dayOfWeek(1-Mon,7-Sun), year
-void decodeDate(String date)
-{
-  switch(date.charAt(0)) {
-    case 'M': dayOfWeek=1; break;
-    case 'T': dayOfWeek=(date.charAt(1)=='U')?2:4; break;
-    case 'W': dayOfWeek=3; break;
-    case 'F': dayOfWeek=5; break;
-    case 'S': dayOfWeek=(date.charAt(1)=='A')?6:7; break;
-  }
-  int midx = 6;
-  if(isdigit(date.charAt(midx))) midx++;
-  midx++;
-  switch(date.charAt(midx)) {
-    case 'F': month = 2; break;
-    case 'M': month = (date.charAt(midx+2)=='R') ? 3 : 5; break;
-    case 'A': month = (date.charAt(midx+1)=='P') ? 4 : 8; break;
-    case 'J': month = (date.charAt(midx+1)=='A') ? 1 : ((date.charAt(midx+2)=='N') ? 6 : 7); break;
-    case 'S': month = 9; break;
-    case 'O': month = 10; break;
-    case 'N': month = 11; break;
-    case 'D': month = 12; break;
-  }
-  day = date.substring(5, midx-1).toInt();
-  year = date.substring(midx+4, midx+9).toInt();
-  return;
-}
-
-// =======================================================================
-// https://en.wikipedia.org/wiki/Summer_Time_in_Europe
-// from
-// Sunday (31 − ((((5 × y) ÷ 4) + 4) mod 7)) March at 01:00 UTC
-// to
-// Sunday (31 − ((((5 × y) ÷ 4) + 1) mod 7)) October at 01:00 UTC
-
-int checkSummerTime()
-{
-  if(month>3 && month<10) return 1;
-  if(month==3 && day>=31-(((5*year/4)+4)%7) ) return 1;
-  if(month==10 && day<31-(((5*year/4)+1)%7) ) return 1;
-  return 0;
-}
-// =======================================================================
 
 void updateTime()
 {
-  long curEpoch = localEpoc + ((millis() - localMillisAtUpdate) / 1000);
-  long epoch = (curEpoch + 3600 * (utcOffset+summerTime) + 86400L) % 86400L;
-  h = ((epoch  % 86400L) / 3600) % 24;
-  m = (epoch % 3600) / 60;
-  s = epoch % 60;
+  static time_t lastEpoch;
+  
+  time_t curEpoch = localEpoch + ((millis() - localMillisAtUpdate) / 1000) - dst;
+  if (dst > 0 && lastEpoch < dst_until_Epoch && curEpoch >= dst_until_Epoch) {
+    localEpoch -= dst_offset;
+    curEpoch -= dst_offset;
+    dst = 0;
+  }
+  if (dst == 0 && lastEpoch < dst_from_Epoch && curEpoch >= dst_from_Epoch) {
+    localEpoch += dst_offset;
+    curEpoch += dst_offset;
+    dst = 1;
+  }
+  //DEBUG(Serial.println(lastEpoch);)
+  //DEBUG(Serial.println(curEpoch);)
+  //DEBUG(Serial.println(dst_from_Epoch);)
+  //DEBUG(Serial.println(dst_until_Epoch);)
+  //DEBUG(Serial.println(dst);)
+  lastEpoch = curEpoch;
+
+  _tm = localtime(&curEpoch);
+  DEBUG(Serial.print(asctime(_tm));)
+  DEBUG(Serial.print("\r");)
 }
 
 // =======================================================================
