@@ -337,11 +337,10 @@ int checkSummerTime()
 void updateTime()
 {
   long curEpoch = localEpoc + ((millis() - localMillisAtUpdate) / 1000);
-  long epoch = round(curEpoch + 3600 * (utcOffset+summerTime) + 86400L) % 86400L;
+  long epoch = (curEpoch + 3600 * (utcOffset+summerTime) + 86400L) % 86400L;
   h = ((epoch  % 86400L) / 3600) % 24;
   m = (epoch % 3600) / 60;
   s = epoch % 60;
 }
 
 // =======================================================================
-
